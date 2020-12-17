@@ -5,7 +5,7 @@ import sys, time, datetime, math, logging, signal
 import numpy
 import simplesoapy
 from simplespectral import zeros
-
+import matplotlib.pyplot as plt
 from soapypower import psd, writer
 
 logger = logging.getLogger(__name__)
@@ -221,6 +221,7 @@ class SoapyPower:
         # Tune to new frequency in main thread
         logger.debug('  Frequency hop: {:.2f} Hz'.format(freq))
         t_freq = time.time()
+        signal = {"start": 0, "stop": 0, "samples": 0, "duration": 0}
         if self.device.freq != freq:
             # Deactivate streaming before tuning
             if self._reset_stream:
@@ -229,7 +230,7 @@ class SoapyPower:
             # Actually tune to new center frequency
             self.device.freq = freq
 
-            # Reactivate straming after tuning
+            # Reactivate streaming after tuning
             if self._reset_stream:
                 self.device.device.activateStream(self.device.stream)
 
@@ -241,12 +242,12 @@ class SoapyPower:
                     t_delay_end = time.time()
                     if t_delay_end - t_delay >= self._tune_delay:
                         break
-                logger.debug('    Tune delay: {:.3f} s'.format(t_delay_end - t_delay))
+                logger.debug('    Tune delay: {:.6f} s'.format(t_delay_end - t_delay))
         else:
             logger.debug('    Same frequency as before, tuning skipped')
         psd_state = self._psd.set_center_freq(freq)
         t_freq_end = time.time()
-        logger.debug('    Tune time: {:.3f} s'.format(t_freq_end - t_freq))
+        logger.debug('    Tune time: {:.6f} s'.format(t_freq_end - t_freq))
 
         for repeat in range(self._buffer_repeats):
             logger.debug('    Repeat: {}'.format(repeat + 1))
@@ -256,10 +257,38 @@ class SoapyPower:
             self.device.read_stream_into_buffer(self._buffer)
             acq_time_stop = datetime.datetime.utcnow()
             t_acq_end = time.time()
-            logger.debug('      Acquisition time: {:.3f} s'.format(t_acq_end - t_acq))
+            logger.debug('      Acquisition time: {:.6f} s'.format(t_acq_end - t_acq))
 
-            # Start FFT computation in another thread
-            self._psd.update_async(psd_state, numpy.copy(self._buffer))
+            # Complex IQ in _buffer
+            threshold=0.1
+
+            # Only interested in processing power
+            if numpy.max(self._buffer.real) > threshold:
+
+              # Array of power values which exceed threshold
+              burst = numpy.where(numpy.abs(self._buffer.real) > threshold)[0]
+
+              # Start power is easy :)
+              start = burst[0]
+
+              # Stop is tricky :p
+              # Search burst for the last value above the threshold which must be followed by a gap of 100 samples to be sure.
+              delta=0
+              laststop=start
+              for stop in burst:
+                delta=stop-laststop
+                if delta > 100:
+                  break
+                laststop=stop
+              
+              if stop-start > 1000:  
+                signal["start"] = start
+                signal["stop"] = stop
+                signal["samples"] = stop-start
+                signal["duration"] = ((stop-start)/self.device.sample_rate)
+  
+                # Start FFT computation in another thread
+                self._psd.update_async(psd_state, numpy.copy(self._buffer[start:stop]))
 
             t_final = time.time()
 
@@ -267,9 +296,9 @@ class SoapyPower:
                 break
 
         psd_future = self._psd.result_async(psd_state)
-        logger.debug('    Total hop time: {:.3f} s'.format(t_final - t_freq))
+        logger.debug('    Total hop time: {:.6f} s'.format(t_final - t_freq))
 
-        return (psd_future, acq_time_start, acq_time_stop)
+        return (psd_future, acq_time_start, acq_time_stop, signal)
 
     def sweep(self, min_freq, max_freq, bins, repeats, runs=0, time_limit=0, overlap=0,
               fft_window='hann', fft_overlap=0.5, crop=False, log_scale=True, remove_dc=False, detrend=None, lnb_lo=0,
@@ -293,11 +322,15 @@ class SoapyPower:
 
                 for freq in freq_list:
                     # Tune to new frequency, acquire samples and compute Power Spectral Density
-                    psd_future, acq_time_start, acq_time_stop = self.psd(freq)
+                    psd_future, acq_time_start, acq_time_stop, signal = self.psd(freq)
 
-                    # Write PSD to stdout (in another thread)
-                    self._writer.write_async(psd_future, acq_time_start, acq_time_stop,
+                    if signal["start"] > 0:
+                      print(signal)
+                      # Write PSD to stdout (in another thread)
+                      self._writer.write_async(psd_future, acq_time_start, acq_time_stop,
                                              len(self._buffer) * self._buffer_repeats)
+                      plt.plot(numpy.abs(self._buffer.real))
+                      plt.show()
 
                     if _shutdown:
                         break
