@@ -176,24 +176,66 @@ class RtlPowerWriter(BaseWriter):
         except AttributeError:
             f_array, pwr_array = psd_data_or_future
         try:
-            step = f_array[1] - f_array[0]
-            row = [
-                time_stop.strftime('%Y-%m-%d'), time_stop.strftime('%H:%M:%S'),
-                f_array[0], f_array[-1] + step, step, samples
-            ]
-            row += list(pwr_array)
-            self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
+            #step = f_array[1] - f_array[0]
+            #row = [
+            #    time_stop.strftime('%Y-%m-%d'), time_stop.strftime('%H:%M:%S'),
+            #    f_array[0], f_array[-1] + step, step, samples
+            #]
+            #row += list(pwr_array)
+            #self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
 
+            # FD measurements
+            peak = numpy.argmax(pwr_array)
+            signal["rssi"] = pwr_array[peak]
+
+            # Measure bandwidth at -3dB point
+            halfPower = signal["rssi"]-3
+            leftEdge = peak
+            rightEdge = peak
+            edges = numpy.where(pwr_array > halfPower)[0]
+
+            leftEdge = edges[0]
+            rightEdge = edges[-1]
+            # <<<<<<<<<<<<<<
+            #while leftEdge > 0:
+            #  if pwr_array[leftEdge] < halfPower:
+            #    break
+            #  leftEdge-=1
+            # >>>>>>>>>>>>>>
+            #while rightEdge < len(pwr_array):
+            #  if pwr_array[rightEdge] < halfPower:
+            #    break
+            #  rightEdge+=1
+
+
+
+
+            # Bandwidth in Hz per FFT bin for precise freq measurements
+            resolution = signal["rate"] / len(pwr_array)
+
+            signal["bandwidth"] = resolution * (rightEdge-leftEdge)
+
+            # Take mean as centre frequency for flat top signals
+            midpoint = len(pwr_array)/2
+            centreFreq = (leftEdge+rightEdge)/2
+            if centreFreq <= midpoint:
+              offset = (resolution * (midpoint-centreFreq)) * -1
+            else:
+              offset = resolution * (centreFreq-midpoint)
+
+            # update frequency
+            signal["freq"] += offset
             # Plot a signal :)
-            filename = "/tmp/"+str(signal["freq"])+".png"
-            self.output.write("Plotting to "+filename+"\n")
+            filename = "%s_%.03fMHz_%.06fs_%dKHz_%ddBm" % (signal["reportTime"],signal["freq"]/1e6,signal["duration"],signal["bandwidth"]/1e3,signal["rssi"])
+            self.output.write(filename+"\n")
             self.output.flush()
 
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
-            fig.suptitle(str(signal["freq"])+"MHz")
-            ax1.plot(signal["td_array"])
-            ax2.plot(pwr_array)
-            plt.savefig(filename)
+            #fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
+            #fig.suptitle(filename)
+            #ax1.plot(signal["td_array"])
+            #ax2.plot(pwr_array)
+            #plt.savefig(filename)
+            #plt.show()
             
         except Exception as e:
             logging.exception('Error writing to output file:')

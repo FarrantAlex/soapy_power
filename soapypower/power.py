@@ -249,7 +249,7 @@ class SoapyPower:
         logger.debug('    Tune time: {:.6f} s'.format(t_freq_end - t_freq))
 
         # Only interested in bursts of power > 100us
-        minBurst = 0.0001 * self.device.sample_rate
+        minBurst = 0.0005 * self.device.sample_rate
 
         for repeat in range(self._buffer_repeats):
             logger.debug('    Repeat: {}'.format(repeat + 1))
@@ -262,7 +262,7 @@ class SoapyPower:
             logger.debug('      Acquisition time: {:.6f} s'.format(t_acq_end - t_acq))
 
             # Complex IQ in _buffer
-            threshold=0.1
+            threshold=0.08
 
             # Only interested in processing power
             if numpy.max(self._buffer.real) > threshold:
@@ -292,12 +292,14 @@ class SoapyPower:
                 if safestop-stop > 1000:
                     safestop = stop+1000
 
-                signal["freq"] = numpy.round(freq/1e6,3)
+                signal["freq"] = freq
                 signal["start"] = start
                 signal["stop"] = stop
                 signal["samples"] = stop-start
                 signal["duration"] = ((stop-start)/self.device.sample_rate)
                 signal["td_array"] = numpy.abs(self._buffer.real[safestart:safestop])
+                signal["reportTime"] = acq_time_start
+                signal["rate"] = self.device.sample_rate
   
                 # Start FFT computation in another thread
                 self._psd.update_async(psd_state, numpy.copy(self._buffer[start:stop]))
