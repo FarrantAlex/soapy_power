@@ -5,7 +5,6 @@ import sys, time, datetime, math, logging, signal
 import numpy
 import simplesoapy
 from simplespectral import zeros
-import matplotlib.pyplot as plt
 from soapypower import psd, writer
 
 logger = logging.getLogger(__name__)
@@ -249,6 +248,9 @@ class SoapyPower:
         t_freq_end = time.time()
         logger.debug('    Tune time: {:.6f} s'.format(t_freq_end - t_freq))
 
+        # Only interested in bursts of power > 100us
+        minBurst = 0.0001 * self.device.sample_rate
+
         for repeat in range(self._buffer_repeats):
             logger.debug('    Repeat: {}'.format(repeat + 1))
             # Read samples from SDR in main thread
@@ -277,15 +279,25 @@ class SoapyPower:
               laststop=start
               for stop in burst:
                 delta=stop-laststop
-                if delta > 100:
+                if delta > minBurst:
+                  stop = laststop
                   break
                 laststop=stop
               
-              if stop-start > 1000:  
+              if stop-start > minBurst:  
+                safestart=0
+                safestop = len(self._buffer.real) -1
+                if start > 1000:
+                    safestart = start-1000
+                if safestop-stop > 1000:
+                    safestop = stop+1000
+
+                signal["freq"] = numpy.round(freq/1e6,3)
                 signal["start"] = start
                 signal["stop"] = stop
                 signal["samples"] = stop-start
                 signal["duration"] = ((stop-start)/self.device.sample_rate)
+                signal["td_array"] = numpy.abs(self._buffer.real[safestart:safestop])
   
                 # Start FFT computation in another thread
                 self._psd.update_async(psd_state, numpy.copy(self._buffer[start:stop]))
@@ -325,13 +337,9 @@ class SoapyPower:
                     psd_future, acq_time_start, acq_time_stop, signal = self.psd(freq)
 
                     if signal["start"] > 0:
-                      print(signal)
                       # Write PSD to stdout (in another thread)
                       self._writer.write_async(psd_future, acq_time_start, acq_time_stop,
-                                             len(self._buffer) * self._buffer_repeats)
-                      plt.plot(numpy.abs(self._buffer.real))
-                      plt.show()
-
+                                             len(self._buffer) * self._buffer_repeats, signal)
                     if _shutdown:
                         break
 

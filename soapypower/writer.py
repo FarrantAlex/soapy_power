@@ -3,6 +3,7 @@
 import sys, logging, struct, collections, io
 
 import numpy
+import matplotlib.pyplot as plt
 
 from soapypower import threadpool
 
@@ -41,9 +42,9 @@ class BaseWriter:
         """Write PSD of one frequency hop"""
         raise NotImplementedError
 
-    def write_async(self, psd_data_or_future, time_start, time_stop, samples):
+    def write_async(self, psd_data_or_future, time_start, time_stop, samples, signal):
         """Write PSD of one frequncy hop (asynchronously in another thread)"""
-        return self._executor.submit(self.write, psd_data_or_future, time_start, time_stop, samples)
+        return self._executor.submit(self.write, psd_data_or_future, time_start, time_stop, samples, signal)
 
     def write_next(self):
         """Write marker for next run of measurement"""
@@ -167,14 +168,13 @@ class RtlPowerWriter(BaseWriter):
         super().__init__(output=output)
         self.output = io.TextIOWrapper(self.output)
 
-    def write(self, psd_data_or_future, time_start, time_stop, samples):
+    def write(self, psd_data_or_future, time_start, time_stop, samples, signal):
         """Write PSD of one frequency hop"""
         try:
             # Wait for result of future
             f_array, pwr_array = psd_data_or_future.result()
         except AttributeError:
             f_array, pwr_array = psd_data_or_future
-
         try:
             step = f_array[1] - f_array[0]
             row = [
@@ -183,7 +183,18 @@ class RtlPowerWriter(BaseWriter):
             ]
             row += list(pwr_array)
             self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
+
+            # Plot a signal :)
+            filename = "/tmp/"+str(signal["freq"])+".png"
+            self.output.write("Plotting to "+filename+"\n")
             self.output.flush()
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
+            fig.suptitle(str(signal["freq"])+"MHz")
+            ax1.plot(signal["td_array"])
+            ax2.plot(pwr_array)
+            plt.savefig(filename)
+            
         except Exception as e:
             logging.exception('Error writing to output file:')
 
