@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import sys, logging, struct, collections, io
-
 import numpy
 import matplotlib.pyplot as plt
 
@@ -42,9 +41,9 @@ class BaseWriter:
         """Write PSD of one frequency hop"""
         raise NotImplementedError
 
-    def write_async(self, psd_data_or_future, time_start, time_stop, samples, signal):
+    def write_async(self, psd_data_or_future, time_start, time_stop, samples, signal, threshold, server, port):
         """Write PSD of one frequncy hop (asynchronously in another thread)"""
-        return self._executor.submit(self.write, psd_data_or_future, time_start, time_stop, samples, signal)
+        return self._executor.submit(self.write, psd_data_or_future, time_start, time_stop, samples, signal, threshold, server, port)
 
     def write_next(self):
         """Write marker for next run of measurement"""
@@ -168,7 +167,7 @@ class RtlPowerWriter(BaseWriter):
         super().__init__(output=output)
         self.output = io.TextIOWrapper(self.output)
 
-    def write(self, psd_data_or_future, time_start, time_stop, samples, signal):
+    def write(self, psd_data_or_future, time_start, time_stop, samples, signal, threshold, server, port):
         """Write PSD of one frequency hop"""
         try:
             # Wait for result of future
@@ -188,6 +187,8 @@ class RtlPowerWriter(BaseWriter):
             peak = numpy.argmax(pwr_array)
             signal["rssi"] = pwr_array[peak]
 
+            if signal["rssi"] < threshold:
+              return
             # Measure bandwidth at -3dB point
             halfPower = signal["rssi"]-3
             leftEdge = peak
@@ -226,7 +227,7 @@ class RtlPowerWriter(BaseWriter):
             # update frequency
             signal["freq"] += offset
             # Plot a signal :)
-            filename = "%s_%.03fMHz_%.06fs_%dKHz_%ddBm" % (signal["reportTime"],signal["freq"]/1e6,signal["duration"],signal["bandwidth"]/1e3,signal["rssi"])
+            filename = "%s_%.03fMHz_%.06fs_%dKHz_%.01fdBm" % (signal["reportTime"],signal["freq"]/1e6,signal["duration"],signal["bandwidth"]/1e3,signal["rssi"])
             self.output.write(filename+"\n")
             self.output.flush()
 

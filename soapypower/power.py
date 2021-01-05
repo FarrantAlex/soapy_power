@@ -6,6 +6,7 @@ import numpy
 import simplesoapy
 from simplespectral import zeros
 from soapypower import psd, writer
+import socket
 
 logger = logging.getLogger(__name__)
 _shutdown = False
@@ -30,7 +31,7 @@ class SoapyPower:
     def __init__(self, soapy_args='', sample_rate=2.00e6, bandwidth=0, corr=0, gain=20.7,
                  auto_gain=False, channel=0, antenna='', settings=None,
                  force_sample_rate=False, force_bandwidth=False,
-                 output=sys.stdout, output_format='rtl_power'):
+                 output=sys.stdout, output_format='rtl_power', threshold=-85, server='127.0.0.1', port=2048):
         self.device = simplesoapy.SoapyDevice(
             soapy_args=soapy_args, sample_rate=sample_rate, bandwidth=bandwidth, corr=corr,
             gain=gain, auto_gain=auto_gain, channel=channel, antenna=antenna, settings=settings,
@@ -39,7 +40,9 @@ class SoapyPower:
 
         self._output = output
         self._output_format = output_format
-
+        self.threshold = threshold
+        self.server = server
+        self.port = port
         self._buffer = None
         self._buffer_repeats = None
         self._base_buffer_size = None
@@ -50,6 +53,7 @@ class SoapyPower:
         self._reset_stream = None
         self._psd = None
         self._writer = None
+        self.sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 
     def nearest_freq(self, freq, bin_size):
         """Return nearest frequency based on bin size"""
@@ -125,7 +129,10 @@ class SoapyPower:
             logger.info('max_center_freq: {:.3f} MHz'.format(max_center_freq / 1e6))
             logger.info('min_freq (after crop): {:.3f} MHz'.format((min_center_freq - (hop_size / 2)) / 1e6))
             logger.info('max_freq (after crop): {:.3f} MHz'.format((max_center_freq + (hop_size / 2)) / 1e6))
-
+            logger.info('threshold: {:.1f} dBm'.format(self.threshold))
+            logger.info('threshold abs: {}'.format(10 ** (self.threshold/10)))
+            logger.info('server: {} '.format(self.server))
+            logger.info('port: {} '.format(self.port))
             logger.debug('Frequency hops table:')
             logger.debug('  {:8s}      {:8s}      {:8s}'.format('Min:', 'Center:', 'Max:'))
             for f in freq_list:
@@ -220,7 +227,7 @@ class SoapyPower:
         # Tune to new frequency in main thread
         logger.debug('  Frequency hop: {:.2f} Hz'.format(freq))
         t_freq = time.time()
-        signal = {"start": 0, "stop": 0, "samples": 0, "duration": 0}
+        signal = {"start": -1, "stop": 0, "samples": 0, "duration": 0}
         if self.device.freq != freq:
             # Deactivate streaming before tuning
             if self._reset_stream:
@@ -248,8 +255,9 @@ class SoapyPower:
         t_freq_end = time.time()
         logger.debug('    Tune time: {:.6f} s'.format(t_freq_end - t_freq))
 
-        # Only interested in bursts of power > 100us
-        minBurst = 0.0005 * self.device.sample_rate
+        # Only interested in bursts of power > 10us
+        minBurst = 0.0001 * self.device.sample_rate
+        absThreshold = 10 ** (self.threshold/10)
 
         for repeat in range(self._buffer_repeats):
             logger.debug('    Repeat: {}'.format(repeat + 1))
@@ -261,20 +269,18 @@ class SoapyPower:
             t_acq_end = time.time()
             logger.debug('      Acquisition time: {:.6f} s'.format(t_acq_end - t_acq))
 
-            # Complex IQ in _buffer
-            threshold=0.08
-
             # Only interested in processing power
-            if numpy.max(self._buffer.real) > threshold:
+            if numpy.max(self._buffer.real) > absThreshold:
+              
+              # Array of power values which exceed absThreshold
+              burst = numpy.where(numpy.abs(self._buffer.real) > absThreshold)[0]
 
-              # Array of power values which exceed threshold
-              burst = numpy.where(numpy.abs(self._buffer.real) > threshold)[0]
-
+              #print(absThreshold,len(burst))
               # Start power is easy :)
               start = burst[0]
 
               # Stop is tricky :p
-              # Search burst for the last value above the threshold which must be followed by a gap of 100 samples to be sure.
+              # Search burst for the last value above the absThreshold which must be followed by a gap of 100 samples to be sure.
               delta=0
               laststop=start
               for stop in burst:
@@ -300,7 +306,7 @@ class SoapyPower:
                 signal["td_array"] = numpy.abs(self._buffer.real[safestart:safestop])
                 signal["reportTime"] = acq_time_start
                 signal["rate"] = self.device.sample_rate
-  
+
                 # Start FFT computation in another thread
                 self._psd.update_async(psd_state, numpy.copy(self._buffer[start:stop]))
 
@@ -338,15 +344,15 @@ class SoapyPower:
                     # Tune to new frequency, acquire samples and compute Power Spectral Density
                     psd_future, acq_time_start, acq_time_stop, signal = self.psd(freq)
 
-                    if signal["start"] > 0:
-                      # Write PSD to stdout (in another thread)
-                      self._writer.write_async(psd_future, acq_time_start, acq_time_stop,
-                                             len(self._buffer) * self._buffer_repeats, signal)
+                    if signal["start"] > -1:
+                      json = self.measurements(psd_future, len(self._buffer) * self._buffer_repeats, signal)
+                      if json:
+                        self.sock.sendto(json.encode('utf-8'), (self.server, self.port))
                     if _shutdown:
                         break
 
                 # Write end of measurement marker (in another thread)
-                write_next_future = self._writer.write_next_async()
+                #write_next_future = self._writer.write_next_async()
                 t_run = time.time()
                 logger.debug('  Total run time: {:.3f} s'.format(t_run - t_run_start))
 
@@ -356,7 +362,7 @@ class SoapyPower:
                     break
 
             # Wait for last write to be finished
-            write_next_future.result()
+            #write_next_future.result()
 
             # Debug thread pool queues
             logging.debug('Number of USB buffer overflow errors: {}'.format(self.device.buffer_overflow_count))
@@ -371,3 +377,61 @@ class SoapyPower:
             self.stop()
             t_stop = time.time()
             logger.info('Total time: {:.3f} s'.format(t_stop - t_start))
+
+    def measurements(self, psd_data_or_future, samples, signal):
+        try:
+            f_array, pwr_array = psd_data_or_future.result()
+        except AttributeError:
+            f_array, pwr_array = psd_data_or_future
+        #step = f_array[1] - f_array[0]
+        #row = [
+        #    time_stop.strftime('%Y-%m-%d'), time_stop.strftime('%H:%M:%S'),
+        #    f_array[0], f_array[-1] + step, step, samples
+        #]
+        #row += list(pwr_array)
+        #self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
+
+        # FD measurements
+        peak = numpy.argmax(pwr_array)
+        signal["rssi"] = pwr_array[peak]
+
+        #if signal["rssi"] < self.threshold:
+          #print("Signal too low at %ddBm" % signal["rssi"])
+        #  return
+
+        # Measure bandwidth at -3dB point
+        halfPower = signal["rssi"]-3
+        leftEdge = peak
+        rightEdge = peak
+        edges = numpy.where(pwr_array > halfPower)[0]
+        leftEdge = edges[0]
+        rightEdge = edges[-1]
+        # <<<<<<<<<<<<<<
+        #while leftEdge > 0:
+        #  if pwr_array[leftEdge] < halfPower:
+        #    break
+        #  leftEdge-=1
+        # >>>>>>>>>>>>>>
+        #while rightEdge < len(pwr_array):
+        #  if pwr_array[rightEdge] < halfPower:
+        #    break
+        #  rightEdge+=1
+
+        # Bandwidth in Hz per FFT bin for precise freq measurements
+        resolution = signal["rate"] / len(pwr_array)
+
+        signal["bandwidth"] = resolution * (rightEdge-leftEdge)
+
+        # Take mean as centre frequency for flat top signals
+        midpoint = len(pwr_array)/2
+        centreFreq = (leftEdge+rightEdge)/2
+        if centreFreq <= midpoint:
+          offset = (resolution * (midpoint-centreFreq)) * -1
+        else:
+          offset = resolution * (centreFreq-midpoint)
+        psd = numpy.int_(numpy.array(pwr_array[leftEdge:rightEdge]))
+        psd = (','.join(str(int(v-signal["rssi"])) for v in psd))
+        # update frequency
+        signal["freq"] += offset
+        json = '{"reportTime": "%s",\n "frequencyMHz": %.3f,\n "bandwidthKHz": %d,\n "psd": [%s],\n "durationMs": %.3f,\n "rssidBm": %.1f\n}\n' % (signal["reportTime"],signal["freq"]/1e6,signal["bandwidth"]/1e3,psd,signal["duration"]*1e3,signal["rssi"])
+        return json            
