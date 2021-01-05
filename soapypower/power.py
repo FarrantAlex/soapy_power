@@ -7,6 +7,7 @@ import simplesoapy
 from simplespectral import zeros
 from soapypower import psd, writer
 import socket
+import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
 _shutdown = False
@@ -38,6 +39,8 @@ class SoapyPower:
             force_sample_rate=force_sample_rate, force_bandwidth=force_bandwidth
         )
 
+        # simplesoapy uses SOAPY_SDR_CF32 (2^31) :/
+        self.scale = 2 ** 31 # 2^7=128, 2^15=32768, 2^31=2147483648
         self._output = output
         self._output_format = output_format
         self.threshold = threshold
@@ -54,6 +57,7 @@ class SoapyPower:
         self._psd = None
         self._writer = None
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
     def nearest_freq(self, freq, bin_size):
         """Return nearest frequency based on bin size"""
@@ -130,7 +134,7 @@ class SoapyPower:
             logger.info('min_freq (after crop): {:.3f} MHz'.format((min_center_freq - (hop_size / 2)) / 1e6))
             logger.info('max_freq (after crop): {:.3f} MHz'.format((max_center_freq + (hop_size / 2)) / 1e6))
             logger.info('threshold: {:.1f} dBm'.format(self.threshold))
-            logger.info('threshold abs: {}'.format(10 ** (self.threshold/10)))
+            logger.info('threshold abs: {}'.format((10 ** (self.threshold/10))* self.scale))
             logger.info('server: {} '.format(self.server))
             logger.info('port: {} '.format(self.port))
             logger.debug('Frequency hops table:')
@@ -257,18 +261,20 @@ class SoapyPower:
 
         # Only interested in bursts of power > 10us
         minBurst = 0.0001 * self.device.sample_rate
-        absThreshold = 10 ** (self.threshold/10)
+        absThreshold = (10 ** (self.threshold/10)) * self.scale
 
         for repeat in range(self._buffer_repeats):
             logger.debug('    Repeat: {}'.format(repeat + 1))
             # Read samples from SDR in main thread
             t_acq = time.time()
-            acq_time_start = datetime.datetime.utcnow()
+
+            acq_time_start = datetime.datetime.utcnow() # not accurate.
             self.device.read_stream_into_buffer(self._buffer)
+
             acq_time_stop = datetime.datetime.utcnow()
             t_acq_end = time.time()
             logger.debug('      Acquisition time: {:.6f} s'.format(t_acq_end - t_acq))
-
+	
             # Only interested in processing power
             if numpy.max(self._buffer.real) > absThreshold:
               
@@ -395,9 +401,9 @@ class SoapyPower:
         peak = numpy.argmax(pwr_array)
         signal["rssi"] = pwr_array[peak]
 
-        #if signal["rssi"] < self.threshold:
-          #print("Signal too low at %ddBm" % signal["rssi"])
-        #  return
+        if signal["rssi"] < self.threshold:
+          print("Signal too low at %ddBm" % signal["rssi"])
+          return
 
         # Measure bandwidth at -3dB point
         halfPower = signal["rssi"]-3
@@ -434,4 +440,10 @@ class SoapyPower:
         # update frequency
         signal["freq"] += offset
         json = '{"reportTime": "%s",\n "frequencyMHz": %.3f,\n "bandwidthKHz": %d,\n "psd": [%s],\n "durationMs": %.3f,\n "rssidBm": %.1f\n}\n' % (signal["reportTime"],signal["freq"]/1e6,signal["bandwidth"]/1e3,psd,signal["duration"]*1e3,signal["rssi"])
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
+        fig.suptitle(str(signal["freq"])+"MHz "+str(signal["bandwidth"])+"KHz")
+        ax1.plot(signal["td_array"])
+        ax2.plot(pwr_array)
+        plt.savefig("plots/"+str(signal["reportTime"])+".png")
+        
         return json            
