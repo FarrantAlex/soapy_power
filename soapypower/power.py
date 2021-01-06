@@ -58,6 +58,7 @@ class SoapyPower:
         self._writer = None
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        self.count = 0
 
     def nearest_freq(self, freq, bin_size):
         """Return nearest frequency based on bin size"""
@@ -261,6 +262,8 @@ class SoapyPower:
 
         # Only interested in bursts of power > 10us
         minBurst = 0.0001 * self.device.sample_rate
+
+        # initial threshold...
         absThreshold = (10 ** (self.threshold/10)) * self.scale
 
         for repeat in range(self._buffer_repeats):
@@ -275,11 +278,19 @@ class SoapyPower:
             t_acq_end = time.time()
             logger.debug('      Acquisition time: {:.6f} s'.format(t_acq_end - t_acq))
 	
+            iq = self._buffer.real+self._buffer.imag
+ 
+            # dynamic threshold
+            noise = abs(numpy.mean(iq[:100]))
+            if noise < absThreshold:
+              absThreshold = noise * 100
+              #print("Threshold set to %.4f" % absThreshold)
+
             # Only interested in processing power
-            if numpy.max(self._buffer.real) > absThreshold:
+            if numpy.max(iq) > absThreshold:
               
               # Array of power values which exceed absThreshold
-              burst = numpy.where(numpy.abs(self._buffer.real) > absThreshold)[0]
+              burst = numpy.where(numpy.abs(iq) > absThreshold)[0]
 
               #print(absThreshold,len(burst))
               # Start power is easy :)
@@ -298,7 +309,7 @@ class SoapyPower:
               
               if stop-start > minBurst:  
                 safestart=0
-                safestop = len(self._buffer.real) -1
+                safestop = len(iq) -1
                 if start > 1000:
                     safestart = start-1000
                 if safestop-stop > 1000:
@@ -309,7 +320,7 @@ class SoapyPower:
                 signal["stop"] = stop
                 signal["samples"] = stop-start
                 signal["duration"] = ((stop-start)/self.device.sample_rate)
-                signal["td_array"] = numpy.abs(self._buffer.real[safestart:safestop])
+                signal["td_array"] = numpy.abs(iq[safestart:safestop])
                 signal["reportTime"] = acq_time_start
                 signal["rate"] = self.device.sample_rate
 
@@ -354,6 +365,8 @@ class SoapyPower:
                       json = self.measurements(psd_future, len(self._buffer) * self._buffer_repeats, signal)
                       if json:
                         self.sock.sendto(json.encode('utf-8'), (self.server, self.port))
+                        print(self.count,json)
+                        self.count +=1 
                     if _shutdown:
                         break
 
@@ -385,6 +398,8 @@ class SoapyPower:
             logger.info('Total time: {:.3f} s'.format(t_stop - t_start))
 
     def measurements(self, psd_data_or_future, samples, signal):
+        plotting=0
+
         try:
             f_array, pwr_array = psd_data_or_future.result()
         except AttributeError:
@@ -398,11 +413,15 @@ class SoapyPower:
         #self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
 
         # FD measurements
-        peak = numpy.argmax(pwr_array)
-        signal["rssi"] = pwr_array[peak]
+        try:
+          peak = numpy.argmax(pwr_array)
+          signal["rssi"] = pwr_array[peak]
+        except:
+          print("pwr_array not empty")
+          return
 
         if signal["rssi"] < self.threshold:
-          print("Signal too low at %ddBm" % signal["rssi"])
+          #print("Signal too low at %ddBm" % signal["rssi"])
           return
 
         # Measure bandwidth at -3dB point
@@ -440,10 +459,13 @@ class SoapyPower:
         # update frequency
         signal["freq"] += offset
         json = '{"reportTime": "%s",\n "frequencyMHz": %.3f,\n "bandwidthKHz": %d,\n "psd": [%s],\n "durationMs": %.3f,\n "rssidBm": %.1f\n}\n' % (signal["reportTime"],signal["freq"]/1e6,signal["bandwidth"]/1e3,psd,signal["duration"]*1e3,signal["rssi"])
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
-        fig.suptitle(str(signal["freq"])+"MHz "+str(signal["bandwidth"])+"KHz")
-        ax1.plot(signal["td_array"])
-        ax2.plot(pwr_array)
-        plt.savefig("plots/"+str(signal["reportTime"])+".png")
+
+        if plotting:
+          fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
+          fig.suptitle(str(signal["freq"])+"MHz "+str(signal["bandwidth"])+"KHz")
+          ax1.plot(signal["td_array"])
+          ax2.plot(pwr_array)
+          plt.savefig("plots/"+str(signal["reportTime"])+".png")
+          plt.close()
         
         return json            
