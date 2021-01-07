@@ -197,3 +197,4 @@ formats = {
     'rtl_power_fftw': RtlPowerFftwWriter,
     'rtl_power': RtlPowerWriter,
 }
+

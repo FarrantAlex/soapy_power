@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os, sys, logging, argparse, re, shutil, textwrap
-
 import simplesoapy
 from soapypower import writer
 from soapypower.version import __version__
@@ -271,7 +270,14 @@ def setup_argument_parser():
                              help='shape parameter of window function (required for kaiser and tukey windows)')
     other_title.add_argument('--fft-overlap', metavar='PERCENT', type=float, default=50,
                              help='Welch\'s method overlap between segments (default: %(default)s)')
-
+    other_title.add_argument('--threshold', metavar='FLOAT',type=float, default=-85,
+                            help='Power threshold for signal measurements in decibel milliwatts (dBm). Default -85dBm')
+    other_title.add_argument('--server', default='127.0.0.1',
+                            help='IPv4 address for server. Default 127.0.0.1')
+    other_title.add_argument('--port', type=int, default=2048,
+                            help='UDP port for (JSON) signal measurements. Default 2048')
+    other_title.add_argument('--plot', type=int, default=0,
+                            help='Plot data to PNG files in /tmp. ON 1, OFF 0. Default 0')
     return parser
 
 
@@ -320,7 +326,7 @@ def main():
             channel=args.channel, antenna=args.antenna, settings=args.device_settings,
             force_sample_rate=args.force_rate, force_bandwidth=args.force_bandwidth,
             output=args.output_fd if args.output_fd is not None else args.output,
-            output_format=args.format
+            output_format=args.format, threshold=args.threshold, server=args.server, port=args.port, plot=args.plot
         )
         logger.info('Using device: {}'.format(sdr.device.hardware))
     except RuntimeError:
