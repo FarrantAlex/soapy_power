@@ -137,7 +137,7 @@ def setup_argument_parser():
     parser = argparse.ArgumentParser(
         prog='soapy_power',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description='Obtain a power spectrum from SoapySDR devices',
+        description='Detect and measure signals with SoapySDR devices',
         add_help=False
     )
 
