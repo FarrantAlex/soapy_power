@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 import sys, logging, struct, collections, io
+
 import numpy
-import matplotlib.pyplot as plt
 
 from soapypower import threadpool
 
@@ -41,9 +41,9 @@ class BaseWriter:
         """Write PSD of one frequency hop"""
         raise NotImplementedError
 
-    def write_async(self, psd_data_or_future, time_start, time_stop, samples, signal, threshold, server, port):
+    def write_async(self, psd_data_or_future, time_start, time_stop, samples):
         """Write PSD of one frequncy hop (asynchronously in another thread)"""
-        return self._executor.submit(self.write, psd_data_or_future, time_start, time_stop, samples, signal, threshold, server, port)
+        return self._executor.submit(self.write, psd_data_or_future, time_start, time_stop, samples)
 
     def write_next(self):
         """Write marker for next run of measurement"""
@@ -167,77 +167,23 @@ class RtlPowerWriter(BaseWriter):
         super().__init__(output=output)
         self.output = io.TextIOWrapper(self.output)
 
-    def write(self, psd_data_or_future, time_start, time_stop, samples, signal, threshold, server, port):
+    def write(self, psd_data_or_future, time_start, time_stop, samples):
         """Write PSD of one frequency hop"""
         try:
             # Wait for result of future
             f_array, pwr_array = psd_data_or_future.result()
         except AttributeError:
             f_array, pwr_array = psd_data_or_future
+
         try:
-            #step = f_array[1] - f_array[0]
-            #row = [
-            #    time_stop.strftime('%Y-%m-%d'), time_stop.strftime('%H:%M:%S'),
-            #    f_array[0], f_array[-1] + step, step, samples
-            #]
-            #row += list(pwr_array)
-            #self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
-
-            # FD measurements
-            peak = numpy.argmax(pwr_array)
-            signal["rssi"] = pwr_array[peak]
-
-            if signal["rssi"] < threshold:
-              return
-            # Measure bandwidth at -3dB point
-            halfPower = signal["rssi"]-3
-            leftEdge = peak
-            rightEdge = peak
-            edges = numpy.where(pwr_array > halfPower)[0]
-
-            leftEdge = edges[0]
-            rightEdge = edges[-1]
-            # <<<<<<<<<<<<<<
-            #while leftEdge > 0:
-            #  if pwr_array[leftEdge] < halfPower:
-            #    break
-            #  leftEdge-=1
-            # >>>>>>>>>>>>>>
-            #while rightEdge < len(pwr_array):
-            #  if pwr_array[rightEdge] < halfPower:
-            #    break
-            #  rightEdge+=1
-
-
-
-
-            # Bandwidth in Hz per FFT bin for precise freq measurements
-            resolution = signal["rate"] / len(pwr_array)
-
-            signal["bandwidth"] = resolution * (rightEdge-leftEdge)
-
-            # Take mean as centre frequency for flat top signals
-            midpoint = len(pwr_array)/2
-            centreFreq = (leftEdge+rightEdge)/2
-            if centreFreq <= midpoint:
-              offset = (resolution * (midpoint-centreFreq)) * -1
-            else:
-              offset = resolution * (centreFreq-midpoint)
-
-            # update frequency
-            signal["freq"] += offset
-            # Plot a signal :)
-            filename = "%s_%.03fMHz_%.06fs_%dKHz_%.01fdBm" % (signal["reportTime"],signal["freq"]/1e6,signal["duration"],signal["bandwidth"]/1e3,signal["rssi"])
-            self.output.write(filename+"\n")
+            step = f_array[1] - f_array[0]
+            row = [
+                time_stop.strftime('%Y-%m-%d'), time_stop.strftime('%H:%M:%S'),
+                f_array[0], f_array[-1] + step, step, samples
+            ]
+            row += list(pwr_array)
+            self.output.write('{}\n'.format(', '.join(str(x) for x in row)))
             self.output.flush()
-
-            #fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
-            #fig.suptitle(filename)
-            #ax1.plot(signal["td_array"])
-            #ax2.plot(pwr_array)
-            #plt.savefig(filename)
-            #plt.show()
-            
         except Exception as e:
             logging.exception('Error writing to output file:')
 
@@ -251,3 +197,4 @@ formats = {
     'rtl_power_fftw': RtlPowerFftwWriter,
     'rtl_power': RtlPowerWriter,
 }
+

@@ -276,6 +276,8 @@ def setup_argument_parser():
                             help='IPv4 address for server. Default 127.0.0.1')
     other_title.add_argument('--port', type=int, default=2048,
                             help='UDP port for (JSON) signal measurements. Default 2048')
+    other_title.add_argument('--plot', type=int, default=0,
+                            help='Plot data to PNG files in /tmp. ON 1, OFF 0. Default 0')
     return parser
 
 
@@ -324,7 +326,7 @@ def main():
             channel=args.channel, antenna=args.antenna, settings=args.device_settings,
             force_sample_rate=args.force_rate, force_bandwidth=args.force_bandwidth,
             output=args.output_fd if args.output_fd is not None else args.output,
-            output_format=args.format, threshold=args.threshold, server=args.server, port=args.port
+            output_format=args.format, threshold=args.threshold, server=args.server, port=args.port, plot=args.plot
         )
         logger.info('Using device: {}'.format(sdr.device.hardware))
     except RuntimeError:
